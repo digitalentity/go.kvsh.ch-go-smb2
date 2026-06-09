@@ -699,6 +699,18 @@ func (conn *conn) runSender() {
 func (conn *conn) runReceiver() {
 	var err error
 
+	// A panic should shutdown the connection
+	defer func() {
+		if r := recover(); r != nil {
+			err = &InvalidResponseError{fmt.Sprintf("receiver panic: %v", r)}
+			conn.m.Lock()
+			defer conn.m.Unlock()
+			conn.outstandingRequests.shutdown(err)
+			conn.err = err
+			close(conn.wdone)
+		}
+	}()
+
 	for {
 		n, e := conn.t.ReadSize()
 		if e != nil {
@@ -757,6 +769,15 @@ func (conn *conn) runReceiver() {
 		}
 
 		p := smb2.PacketCodec(pkt)
+
+		// validate the packet if it doesn't have a session yet. tryDecrypt
+		// already checks the packet validity when there is a session.
+		if !hasSession && p.IsInvalid() {
+			conn.freePoolBuf(rb)
+			logger.Println("skip:", &InvalidResponseError{"invalid packet header"})
+			continue
+		}
+
 		if p.NextCommand() == 0 {
 			// Single response: transfer the pooled buffer to the caller.
 			if hasSession {
@@ -773,7 +794,19 @@ func (conn *conn) runReceiver() {
 
 			var next []byte
 			for {
-				if off := p.NextCommand(); off != 0 {
+				// validate each segment before reading its header fields.
+				if p.IsInvalid() {
+					logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
+					break
+				}
+
+				off := p.NextCommand()
+				if off != 0 {
+					// Check for a valid offset - greater than the header size and less than the buffer size
+					if off < 64 || off > uint32(len(pkt)) {
+						err = &InvalidResponseError{"NextCommand offset out of bounds"}
+						goto exit
+					}
 					pkt, next = pkt[:off], pkt[off:]
 				} else {
 					next = nil
