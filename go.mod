@@ -1,4 +1,4 @@
-module github.com/cloudsoda/go-smb2
+module go.kvsh.ch/smb2
 
 go 1.25
 

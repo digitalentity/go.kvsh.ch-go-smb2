@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudsoda/go-smb2/internal/erref"
-	"github.com/cloudsoda/go-smb2/internal/msrpc"
-	"github.com/cloudsoda/go-smb2/internal/smb2"
-	"github.com/cloudsoda/go-smb2/internal/utf16le"
+	"go.kvsh.ch/smb2/internal/erref"
+	"go.kvsh.ch/smb2/internal/msrpc"
+	"go.kvsh.ch/smb2/internal/smb2"
+	"go.kvsh.ch/smb2/internal/utf16le"
 	"github.com/cloudsoda/sddl"
 )
 

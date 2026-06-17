@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 
-	"github.com/cloudsoda/go-smb2/internal/utf16le"
+	"go.kvsh.ch/smb2/internal/utf16le"
 )
 
 type ChallengeMessage struct {

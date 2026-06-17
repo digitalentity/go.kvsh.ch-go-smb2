@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cloudsoda/go-smb2/internal/erref"
+	"go.kvsh.ch/smb2/internal/erref"
 )
 
 // status errors - add more if necessary

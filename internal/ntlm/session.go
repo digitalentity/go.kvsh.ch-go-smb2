@@ -5,7 +5,7 @@ import (
 	"crypto/rc4"
 	"errors"
 
-	"github.com/cloudsoda/go-smb2/internal/utf16le"
+	"go.kvsh.ch/smb2/internal/utf16le"
 )
 
 type Session struct {

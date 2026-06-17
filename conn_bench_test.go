@@ -8,7 +8,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/cloudsoda/go-smb2/internal/smb2"
+	"go.kvsh.ch/smb2/internal/smb2"
 )
 
 const bufSize = 1 << 20 // 1MiB

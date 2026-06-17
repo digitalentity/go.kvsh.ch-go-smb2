@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/cloudsoda/go-smb2/internal/utf16le"
+	"go.kvsh.ch/smb2/internal/utf16le"
 )
 
 func TestNtowfv2(t *testing.T) {

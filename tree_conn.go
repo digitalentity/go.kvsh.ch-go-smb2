@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cloudsoda/go-smb2/internal/smb2"
-	"github.com/cloudsoda/go-smb2/internal/utf16le"
+	"go.kvsh.ch/smb2/internal/smb2"
+	"go.kvsh.ch/smb2/internal/utf16le"
 )
 
 // sentinelFileId is used for related compound operations.

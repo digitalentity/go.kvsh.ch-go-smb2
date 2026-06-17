@@ -6,9 +6,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/cloudsoda/go-smb2/internal/crypto/cmac"
-	"github.com/cloudsoda/go-smb2/internal/erref"
-	"github.com/cloudsoda/go-smb2/internal/smb2"
+	"go.kvsh.ch/smb2/internal/crypto/cmac"
+	"go.kvsh.ch/smb2/internal/erref"
+	"go.kvsh.ch/smb2/internal/smb2"
 	"github.com/stretchr/testify/require"
 )
 

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cloudsoda/go-smb2/internal/erref"
+	"go.kvsh.ch/smb2/internal/erref"
 )
 
 func TestIsFileDeleted(t *testing.T) {

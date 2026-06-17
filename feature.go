@@ -1,7 +1,7 @@
 package smb2
 
 import (
-	"github.com/cloudsoda/go-smb2/internal/smb2"
+	"go.kvsh.ch/smb2/internal/smb2"
 )
 
 // client

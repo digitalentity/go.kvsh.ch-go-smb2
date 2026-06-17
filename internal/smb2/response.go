@@ -1,6 +1,6 @@
 package smb2
 
-import "github.com/cloudsoda/go-smb2/internal/utf16le"
+import "go.kvsh.ch/smb2/internal/utf16le"
 
 // ----------------------------------------------------------------------------
 // SMB2 Error Response

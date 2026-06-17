@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cloudsoda/go-smb2"
+	"go.kvsh.ch/smb2"
 )
 
 func Example() {
