@@ -174,8 +174,7 @@ func (c *Session) Echo() error {
 
 // Mount mounts the SMB share.
 // sharename must follow format like `<share>` or `\\<server>\<share>`.
-// Note that the mounted share doesn't inherit session's context.
-// If you want to use the same context, call Share.WithContext manually.
+// The returned mounted share inherits the session's context.
 func (c *Session) Mount(sharename string, opts ...MountOption) (*Share, error) {
 	sharename = normPath(sharename)
 
@@ -201,7 +200,7 @@ func (c *Session) Mount(sharename string, opts ...MountOption) (*Share, error) {
 		return nil, err
 	}
 
-	return &Share{treeConn: tc, ctx: context.Background(), mapping: options.mapping}, nil
+	return &Share{treeConn: tc, ctx: c.ctx, mapping: options.mapping}, nil
 }
 
 func (c *Session) ListSharenames() ([]string, error) {
@@ -357,7 +356,14 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 		FileName:       base(name),
 	}
 
-	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat, mapping: fs.mapping}
+	f := &File{
+		fs:       fs,
+		fd:       fd,
+		name:     name,
+		fileStat: fileStat,
+		mapping:  fs.mapping,
+		state:    new(fileState),
+	}
 
 	runtime.SetFinalizer(f, (*File).close)
 
@@ -1264,18 +1270,43 @@ func (fs *Share) loanCredit(payloadSize int) (creditCharge uint16, grantedPayloa
 	return fs.session.conn.loanCredit(fs.ctx, payloadSize)
 }
 
+// closeTimeout bounds the detached CLOSE issued when a File is closed, so a
+// dead connection cannot block the caller (or a finalizer goroutine) forever.
+const closeTimeout = 15 * time.Second
+
+type fileState struct {
+	offset      int64
+	dirents     []os.FileInfo
+	noMoreFiles bool
+	m           sync.Mutex
+}
+
 type File struct {
 	fs          *Share
 	fd          *smb2.FileId
 	name        string
 	fileStat    *FileStat
-	dirents     []os.FileInfo
-	noMoreFiles bool
 	mapping     utf16le.MapChars
 
-	offset int64
+	state *fileState
+}
 
-	m sync.Mutex
+// WithContext returns a shallow copy of f whose operations use ctx for
+// cancellation and deadlines. The underlying file handle (fd) is shared; only
+// the request context changes.
+//
+// The returned *File shares mutable state (seek offset, directory read cursor)
+// and the protecting mutex with f. Operations on the original and the copy
+// serialize against each other, and a Seek on one moves the position seen by
+// the other. Use WithContext to apply a context to a sequence of operations,
+// not to obtain an independent cursor over the same handle.
+func (f *File) WithContext(ctx context.Context) *File {
+	if ctx == nil {
+		panic("nil context")
+	}
+	nf := *f
+	nf.fs = f.fs.WithContext(ctx)
+	return &nf
 }
 
 func (f *File) Close() error {
@@ -1303,7 +1334,12 @@ func (f *File) close() error {
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(smb2.SMB2_CLOSE, req)
+	// Use a detached background context to ensure the file handle is closed on the server
+	// even if the file's operational context (f.fs.ctx) has been cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+
+	res, err := f.fs.WithContext(ctx).sendRecv(smb2.SMB2_CLOSE, req)
 	if err != nil {
 		return err
 	}
@@ -1341,8 +1377,8 @@ func (f *File) Name() string {
 }
 
 func (f *File) Read(b []byte) (n int, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
+	f.state.m.Lock()
+	defer f.state.m.Unlock()
 
 	off, err := f.seek(0, io.SeekCurrent)
 	if err != nil {
@@ -1515,21 +1551,21 @@ func (f *File) readAtChunk(n int, off int64) (bs []byte, isEOF bool, rr *request
 }
 
 func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
+	f.state.m.Lock()
+	defer f.state.m.Unlock()
 
-	if !f.noMoreFiles {
-		if f.dirents == nil {
-			f.dirents = []os.FileInfo{}
+	if !f.state.noMoreFiles {
+		if f.state.dirents == nil {
+			f.state.dirents = []os.FileInfo{}
 		}
-		for n <= 0 || n > len(f.dirents) {
+		for n <= 0 || n > len(f.state.dirents) {
 			dirents, err := f.readdir("*")
 			if len(dirents) > 0 {
-				f.dirents = append(f.dirents, dirents...)
+				f.state.dirents = append(f.state.dirents, dirents...)
 			}
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_NO_MORE_FILES {
-					f.noMoreFiles = true
+					f.state.noMoreFiles = true
 					break
 				}
 				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
@@ -1537,7 +1573,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 		}
 	}
 
-	fi = f.dirents
+	fi = f.state.dirents
 
 	if n > 0 {
 		if len(fi) == 0 {
@@ -1545,16 +1581,16 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 		}
 
 		if len(fi) < n {
-			f.dirents = []os.FileInfo{}
+			f.state.dirents = []os.FileInfo{}
 			return fi, nil
 		}
 
-		f.dirents = fi[n:]
+		f.state.dirents = fi[n:]
 		return fi[:n], nil
 
 	}
 
-	f.dirents = []os.FileInfo{}
+	f.state.dirents = []os.FileInfo{}
 
 	return fi, nil
 }
@@ -1641,8 +1677,8 @@ func (f *File) Readdirnames(n int) (names []string, err error) {
 
 // Seek implements io.Seeker.
 func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
+	f.state.m.Lock()
+	defer f.state.m.Unlock()
 
 	ret, err = f.seek(offset, whence)
 	if err != nil {
@@ -1654,9 +1690,9 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 	switch whence {
 	case io.SeekStart:
-		f.offset = offset
+		f.state.offset = offset
 	case io.SeekCurrent:
-		f.offset += offset
+		f.state.offset += offset
 	case io.SeekEnd:
 		req := &smb2.QueryInfoRequest{
 			InfoType:              smb2.SMB2_0_INFO_FILE,
@@ -1676,12 +1712,12 @@ func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 			return -1, &InvalidResponseError{"broken query info response format"}
 		}
 
-		f.offset = offset + info.EndOfFile()
+		f.state.offset = offset + info.EndOfFile()
 	default:
 		return -1, os.ErrInvalid
 	}
 
-	return f.offset, nil
+	return f.state.offset, nil
 }
 
 func (f *File) Stat() (os.FileInfo, error) {
@@ -1915,8 +1951,8 @@ func (f *File) chmod(mode os.FileMode) error {
 }
 
 func (f *File) Write(b []byte) (n int, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
+	f.state.m.Lock()
+	defer f.state.m.Unlock()
 
 	off, err := f.seek(0, io.SeekCurrent)
 	if err != nil {
@@ -2044,8 +2080,8 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 }
 
 func (f *File) copyTo(wf *File) (supported bool, n int64, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
+	f.state.m.Lock()
+	defer f.state.m.Unlock()
 
 	req := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_SRV_REQUEST_RESUME_KEY,
