@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"net"
 	"testing"
+	"time"
 
 	"go.kvsh.ch/smb2/internal/crypto/cmac"
 	"go.kvsh.ch/smb2/internal/erref"
@@ -154,3 +155,106 @@ func TestTryVerify(t *testing.T) {
 		require.NoError(c.tryVerify(pkt, false))
 	})
 }
+
+type mockTransport struct {
+	writeCalled chan struct{}
+	writeBlock  chan struct{}
+}
+
+func (m *mockTransport) Write(p []byte) (n int, err error) {
+	select {
+	case m.writeCalled <- struct{}{}:
+	default:
+	}
+	<-m.writeBlock
+	var dummy byte
+	for _, b := range p {
+		dummy += b
+	}
+	_ = dummy
+	return len(p), nil
+}
+
+func (m *mockTransport) ReadSize() (size int, err error) {
+	return 0, nil
+}
+
+func (m *mockTransport) Read(p []byte) (n int, err error) {
+	return 0, nil
+}
+
+func (m *mockTransport) Close() error {
+	return nil
+}
+
+func TestSendWith_ContextCancellationRace(t *testing.T) {
+	require := require.New(t)
+
+	writeCalled := make(chan struct{}, 1)
+	writeBlock := make(chan struct{})
+
+	tTransport := &mockTransport{
+		writeCalled: writeCalled,
+		writeBlock:  writeBlock,
+	}
+
+	c := &conn{
+		t:                   tTransport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(128),
+		rdone:               make(chan struct{}, 1),
+		wdone:               make(chan struct{}, 1),
+		write:               make(chan []byte, 1),
+		werr:                make(chan error, 1),
+		dialect:             smb2.SMB302,
+	}
+	go c.runSender()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start first sendWith in a separate goroutine.
+	var req1 smb2.ReadRequest
+	req1.CreditCharge = 1
+
+	sendErrChan := make(chan error, 1)
+	go func() {
+		_, err := c.send(ctx, &req1)
+		sendErrChan <- err
+	}()
+
+	// Wait for Write to be called by runSender.
+	<-writeCalled
+
+	// Now cancel the context.
+	cancel()
+
+	// Immediately start a second sendWith on the same connection.
+	// Since sendWith has returned and released c.m, this will try to encode
+	// into the same c.encodeBuf.
+	// Meanwhile, runSender is still blocked in tTransport.Write (holding a reference
+	// to the previous c.encodeBuf content via pkt).
+	// This should trigger a data race under -race.
+	var req2 smb2.ReadRequest
+	req2.CreditCharge = 1
+
+	send2Done := make(chan struct{})
+	go func() {
+		_, _ = c.send(context.Background(), &req2)
+		close(send2Done)
+	}()
+
+	// Wait a short time to allow the race to happen under buggy code, then unblock the transport.
+	time.Sleep(50 * time.Millisecond)
+	close(writeBlock)
+
+	// Wait for sendWith to return.
+	err := <-sendErrChan
+	if err != nil {
+		require.ErrorIs(err, context.Canceled)
+	}
+
+	// Clean up.
+	<-send2Done
+	close(c.wdone)
+}
+

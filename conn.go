@@ -384,17 +384,11 @@ func (conn *conn) sendWith(ctx context.Context, req smb2.Packet, tc *treeConn) (
 
 	select {
 	case conn.write <- rr.pkt:
-		select {
-		case err = <-conn.werr:
-			if err != nil {
-				conn.outstandingRequests.pop(rr.msgId)
-
-				return nil, &TransportError{err}
-			}
-		case <-ctx.Done():
+		err = <-conn.werr
+		if err != nil {
 			conn.outstandingRequests.pop(rr.msgId)
 
-			return nil, ctx.Err()
+			return nil, &TransportError{err}
 		}
 	case <-ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
@@ -574,19 +568,12 @@ func (conn *conn) sendCompound(ctx context.Context, entries []compoundEntry) ([]
 
 	select {
 	case conn.write <- wirePkt:
-		select {
-		case err := <-conn.werr:
-			if err != nil {
-				for _, rr := range rrs {
-					conn.outstandingRequests.pop(rr.msgId)
-				}
-				return nil, &TransportError{err}
-			}
-		case <-ctx.Done():
+		err := <-conn.werr
+		if err != nil {
 			for _, rr := range rrs {
 				conn.outstandingRequests.pop(rr.msgId)
 			}
-			return nil, ctx.Err()
+			return nil, &TransportError{err}
 		}
 	case <-ctx.Done():
 		for _, rr := range rrs {
